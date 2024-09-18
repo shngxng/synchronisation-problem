@@ -6,38 +6,9 @@
 #include <time.h>
 #include <unistd.h>
 
-// 4 cond var
-// 2 mutex
-
-// dont have one cond var for each group 
-// teacher waits for students to arrive 
-// students tell techer thier id 
-
-// cond
-/// 1. for making the teacher wait for all students to arrive
-/// 2. for making students wait until the teacher is ready to give teacher their IDs
-/// 3. one for making the teacher wait for students to finish repeating the IDs they just receied
-/// 4. oen for making students wait for the teacher to tell them to leave
-
-
-/// teacher thread calls broadcast 
-// 1. each student need to wait for the teacher to tell them their id 
-// 2. for teacher: to wait for the students to receive the next instructions once student told her the student id 
-/// teacher wait for student to get ready 
-/// teacher to dismiss students (students wait for teacher to dismiss students) -> pthread_broadcast (used in 2 places)
-// ///// teacher thread calls broadcast 
-
-
-// mutex
-// one to control students leaving and entering 
-// another one : to control student and techer for saying / listening student IDs
-///////// to manage the distribution of IDs
-
-
 void * teacher_routine(void *);
 void * student_routine(void *);
 void * tutor_routine(void *);
-struct tutor_object * check_tutor_availability();
 bool all_students_in_lab(int groupid);
 struct tutor_object * dequeue_tutor();
 void enqueue_tutor(struct tutor_object* tutor);
@@ -70,53 +41,48 @@ int teacher_to_tutor = -2; // -2 to tell tutor that the all students are in the 
 int grps_done = 0;
 int tutors_can_start = false;
 
+int waiting_count; // num of waiting groups
+int tutors_to_leave = false;
+int front = 0, rear = 0, tutor_queue_size = 0; 
+int teacher_to_announce = false;
+bool all_stud_left = false;
+
+
 pthread_cond_t waiting_students_arrival; // teacher waits for all students to arrive
 pthread_cond_t waiting_teacher_to_give_IDs; // students wait for teacher to assign group
 pthread_cond_t waiting_repeating_ids; // teacher waits for students to repeat IDs
 pthread_cond_t waiting_students_leave;  // for students to hear from teacher that they can leave now
-// students wait for teacher's signal to leave
 pthread_cond_t tutor_enter;
-pthread_cond_t waiting_lab_ended;
 pthread_cond_t students_all_left; // teacher need confirmation that all students have left 
 pthread_cond_t tutor_available;
-pthread_cond_t lab_available;
 pthread_cond_t students_enter_lab;
 pthread_cond_t student_check_lab;
 pthread_cond_t tutors_vacate_room;
-pthread_cond_t finish_assigning;
-pthread_cond_t students_in_lab;
-pthread_cond_t grp_is_done;
 pthread_cond_t announce_grp_arrived;
-pthread_cond_t update_tutor_id; 
 pthread_cond_t wait_all_tutors_ready;
-
 pthread_cond_t tutors_repeat_leave;
 pthread_cond_t tell_tutor_exit;
 
 pthread_mutex_t tutor_enter_mutex= PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t grp_done_mutex= PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t students_in=PTHREAD_MUTEX_INITIALIZER; // wait for all students to be in the lab for curr grp
 pthread_mutex_t grp_id_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t waiting_for_tutors_mutex=PTHREAD_MUTEX_INITIALIZER; // wait for tutors 
 pthread_mutex_t students_announce_lab_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t students_mutex;
 pthread_mutex_t lab_availability_mutex=PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t tutor_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t students_left_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t announce_students_left_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t distribute_group_IDs_mutex;
 pthread_mutex_t tutor_id_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tutor_repeat_id_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tutors_leave_mutex=PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t tutor_queue_mutex ;  // mutex for queue operations
+
 
 pthread_t *tutor_thrd_ids; // Tutor system thread ID
 pthread_t *s_thrd_ids; // system thread id
 pthread_t t_thrd_id; //teacher system thread id
 
 
-int waiting_count; // num of waiting groups
-pthread_mutex_t waiting_group_mutex = PTHREAD_MUTEX_INITIALIZER;
-int tutors_to_leave = false;
 
 typedef struct student_object {
     int id;
@@ -139,13 +105,6 @@ typedef struct tutor_object {
 struct student_object *students; //user-defined thread id
 struct tutor_object *tutors; //user-defined thread id
 struct tutor_object **tutors_queue; 
-
-int front = 0, rear = 0, tutor_queue_size = 0; 
-int teacher_to_announce = false;
-bool all_stud_left = false;
-
-pthread_mutex_t tutor_queue_mutex ;  // Mutex for queue operations
-pthread_cond_t tutor_queue_not_empty;
 
 
 int main(int argc, char ** argv) {
@@ -173,8 +132,6 @@ int main(int argc, char ** argv) {
 	scanf("%d", &time_limit_each_group);
         printf("\n\n");
 
-    // time_limit_each_group = 3;
-    // no_of_tutors = 5;
     no_of_labs = no_of_tutors;
     waiting_count = no_of_groups;
 
@@ -217,25 +174,17 @@ int main(int argc, char ** argv) {
 
 
     pthread_cond_init(&tutor_available, NULL);
-    pthread_cond_init(&lab_available, NULL);
     pthread_cond_init(&students_enter_lab, NULL);
     pthread_cond_init(&student_check_lab, NULL);
     pthread_cond_init(&tutors_vacate_room, NULL);
-    pthread_cond_init(&finish_assigning, NULL);
-    pthread_cond_init(&students_in_lab, NULL);
     pthread_cond_init(&tell_tutor_exit, NULL);
-    pthread_cond_init(&grp_is_done, NULL);
     pthread_cond_init(&announce_grp_arrived, NULL);
     pthread_cond_init(&students_all_left, NULL);
     pthread_cond_init(&waiting_students_leave, NULL);
-    pthread_cond_init(&waiting_lab_ended, NULL);
-    pthread_cond_init(&tutor_queue_not_empty, NULL);
-    pthread_cond_init(&update_tutor_id, NULL);
     pthread_cond_init(&tutors_repeat_leave, NULL);
     pthread_cond_init(&tutor_enter, NULL);
 
     //Initialize condition variable and mutex objects 
-    pthread_mutex_init(&waiting_group_mutex, NULL);
 	pthread_mutex_init(&students_mutex, NULL);
 	pthread_mutex_init(&tutor_queue_mutex, NULL);
 	pthread_mutex_init(&distribute_group_IDs_mutex, NULL);
@@ -334,13 +283,9 @@ int main(int argc, char ** argv) {
 
 	//destroy mutex and condition variable objects
     pthread_mutex_destroy(&students_mutex);
-	pthread_mutex_destroy(&waiting_group_mutex);
-	pthread_mutex_destroy(&grp_done_mutex);
-	pthread_mutex_destroy(&students_in);
 	pthread_mutex_destroy(&waiting_for_tutors_mutex);
 	pthread_mutex_destroy(&students_announce_lab_mutex);
 	pthread_mutex_destroy(&lab_availability_mutex);
-	pthread_mutex_destroy(&tutor_mutex);
 	pthread_mutex_destroy(&students_left_mutex);
 	pthread_mutex_destroy(&distribute_group_IDs_mutex);
 	pthread_mutex_destroy(&tutor_id_mutex);
@@ -354,19 +299,13 @@ int main(int argc, char ** argv) {
 	pthread_cond_destroy(&waiting_repeating_ids);
 	pthread_cond_destroy(&waiting_students_leave);
 	pthread_cond_destroy(&tutor_available);
-	pthread_cond_destroy(&lab_available);
 	pthread_cond_destroy(&students_enter_lab);
 	pthread_cond_destroy(&student_check_lab);
 	pthread_cond_destroy(&tutors_vacate_room);
-	pthread_cond_destroy(&finish_assigning);
-	pthread_cond_destroy(&students_in_lab);
 	pthread_cond_destroy(&tell_tutor_exit);
-	pthread_cond_destroy(&grp_is_done);
 	pthread_cond_destroy(&announce_grp_arrived);
 	pthread_cond_destroy(&students_all_left);
 	pthread_cond_destroy(&waiting_students_leave);
-	pthread_cond_destroy(&waiting_lab_ended);
-	pthread_cond_destroy(&tutor_queue_not_empty);
     pthread_cond_destroy(&tutors_repeat_leave);
 
     exit(0);
@@ -439,12 +378,16 @@ void * teacher_routine(void * arg) {
             pthread_cond_wait(&tutor_available, &waiting_for_tutors_mutex);
             tutor_avail = dequeue_tutor();
         }
+
         curr_lab_num = tutor_avail->lab_id;
         curr_tutor_id = tutor_avail->tutor_id;
         pthread_cond_broadcast(&tutors_vacate_room); 
+
+        
         printf("Teacher: The lab [%d] is now available. Students in group %d can enter the room and start your lab exercise.\n", curr_lab_num, gid);
-        teacher_to_announce = false; 
+        teacher_to_announce = false;
         pthread_mutex_unlock(&waiting_for_tutors_mutex);
+
 
 
         pthread_mutex_lock(&lab_availability_mutex);
@@ -479,54 +422,34 @@ void * teacher_routine(void * arg) {
     }
 
     //signal tutor to exit
+    pthread_mutex_lock(&students_left_mutex);
     while (students_left != no_of_students) {
         pthread_cond_wait(&students_all_left, &students_left_mutex);
     }
+    pthread_mutex_unlock(&students_left_mutex);
     
     printf("Teacher: All students have left.\n");
     pthread_mutex_lock(&tutor_id_mutex);
     curr_tutor_id = -1; // signal to tell tutor that tutor can exit
     curr_lab_num = -1;
-    // curr_lab_num = tutor_avail->lab_id;
     pthread_mutex_unlock(&tutor_id_mutex);
-    pthread_cond_broadcast(&tutor_enter);  // signal tutor to leave
-
+    pthread_cond_broadcast(&tutor_enter);  // to release the while loop 
     pthread_cond_broadcast(&tutors_vacate_room);
 
-    // if (all_tutors_ready()) {
-        for (int i =0; i < no_of_tutors; i++) {
+    for (int i =0; i < no_of_tutors; i++) {
 
-            // pthread_cond_broadcast(&tutors_vacate_room);
+        pthread_cond_broadcast(&tell_tutor_exit);  // signal tutor to leave
 
-            // pthread_mutex_lock(&tutor_repeat_id_mutex);
-            // curr_tid_to_repeat = i;
-            // pthread_mutex_unlock(&tutor_repeat_id_mutex);  
-            pthread_cond_broadcast(&tell_tutor_exit);  // signal tutor to leave
-
-            printf("Teacher: There are no students waiting. Tutor [%d], you can go home now.\n", i);
-            while (!tutors[i].has_left && curr_tid_to_repeat != i) {
-                printf("teacher: tutor has not left yet\n");
-                pthread_cond_wait(&tutors_repeat_leave, &tutors_leave_mutex);
-            }
-            // wile thres still tutor that hasnt left , keep repeatedly check for tutors that are still avail and signal to leave
-            // need to make this happen after the tutor is alr waiting 
-            // pthread_cond_wait(&tell_tutor_exit, &tutors_leave_mutex);  
-            // pthread_cond_broadcast(&tell_tutor_exit); //broadcast to all tutors to leave 
-
-            // pthread_mutex_unlock(&tutor_id_mutex);  
-            // printf("teacher: now waiting for tutor to repeat\n");
-            // if (!tutors[i].has_left) {
-            // pthread_cond_wait(&tutors_repeat_leave, &tutors_leave_mutex);
-            // pthread_mutex_lock(&tutor_id_mutex);
+        printf("Teacher: There are no students waiting. Tutor [%d], you can go home now.\n", i);
+        while (!tutors[i].has_left && curr_tid_to_repeat != i) {
+            // printf("teacher: tutor has not left yet\n");
+            // wait for tutor to finish repeating that they are leaving 
+            pthread_cond_wait(&tutors_repeat_leave, &tutors_leave_mutex);
         }
-    // }
-    // pthread_mutex_unlock(&tutors_leave_mutex);
-    // pthread_mutex_unlock(&tutor_id_mutex);
+        
+    }
 
-
-    // pthread_mutex_unlock(&waiting_for_tutors_mutex);
-    // pthread_cond_broadcast(&tell_tutor_exit); //broadcast to all tutors to leave 
-    ///////15 
+    // wait until all tutors have left then print the messsage that both stud and tuts left
     pthread_mutex_lock(&tutor_id_mutex);
     while (!all_tutors_have_left()) {
         pthread_cond_wait(&tutors_repeat_leave, &tutors_leave_mutex);
@@ -537,16 +460,6 @@ void * teacher_routine(void * arg) {
     pthread_exit(EXIT_SUCCESS);
 }
 
-
-struct tutor_object * check_tutor_availability() {
-    // whichever tutor is ready 
-    for (int i =0; i < no_of_tutors; i++) {
-        if (tutors[i].is_ready) {
-            return &tutors[i];
-        }
-    }
-    return NULL;
-}
 
 bool all_students_in_lab(int groupid)  {
     pthread_mutex_lock(&students_mutex);
@@ -562,14 +475,11 @@ bool all_students_in_lab(int groupid)  {
 
 
 bool all_students_have_left(int groupid)  {
-    // pthread_mutex_lock(&students_left_mutex);
     for (int i=0; i < no_of_students; i++) {
         if (students[i].group_id == groupid && !students[i].has_left) {
-            // pthread_mutex_unlock(&students_left_mutex);
             return false;
         }
     }
-    // pthread_mutex_unlock(&students_left_mutex);
     return true;
 }
 
@@ -601,7 +511,6 @@ bool all_students_done_lab(int groupid)  {
 void * student_routine(void * arg) {
     struct student_object * student = (struct student_object*) arg;
     
-    /////////2
     pthread_mutex_lock(&students_mutex);
     printf("Student [%d]: I have arrived and wait for being assigned to a group.\n", student->id);
     students_arrived++;
@@ -618,7 +527,6 @@ void * student_routine(void * arg) {
     while (curr_id_to_repeat != student->id && lab_availability_status == -1) {
         pthread_cond_wait(&waiting_repeating_ids, &distribute_group_IDs_mutex);
     }
-    //////////5
     printf("Student [%d]: OK, I'm in group [%d] and waiting for my turn to enter a lab room.\n", student->id, student->group_id);
     pthread_cond_signal(&waiting_repeating_ids); //create new signal for tutor
     pthread_mutex_unlock(&distribute_group_IDs_mutex);
@@ -631,37 +539,28 @@ void * student_routine(void * arg) {
     printf("Student [%d] in group [%d]: My group is called. I will enter the lab room now.\n\n", student->id, student->group_id); 
     
     student->in_lab = true;
-    ///1. tutor waits for the broadcast signal that all students has entered lab
+    ///tutor waits for the broadcast signal that all students has entered lab
     pthread_cond_broadcast(&students_enter_lab);
     pthread_mutex_unlock(&lab_availability_mutex);
 
 
     pthread_mutex_lock(&students_left_mutex);
-    ////////9
-    // printf("\tstudent before waiting %d: group_id_done = %d\n", student->id, group_id_done);
+
     //wait for tutor to call the end of lab exercise
     while (!student->done_lab) {
         pthread_cond_wait(&waiting_students_leave, &students_left_mutex);
-        // printf("\tstudent %d from grp %d is done %d\n", student->id, student->group_id, student->done_lab);
     }
-    // if curr grp left is not yet set to true
-    // meaning not all students from the current grp has left yet
-    // then wait abit until all students from curr grp leaves. 
-    // this is to avoid any interruptions where not all students from teh
-    // previous grp all left first 
+
     printf("Student %d in group %d: Thanks Tutor. Bye!\n", student->id, student->group_id); 
     students_left++;
     student->has_left = true;
-    // printf("\tTotal students left: %d\n", students_left);
 
     // Check if this is the last student leaving the group
     if (students_left_per_group(student->group_id) == total_students_in_group(student->group_id)) {
-        // printf("All students in group %d have left.\n", student->group_id);
         pthread_cond_broadcast(&students_all_left);
         waiting_count--;
     }
     pthread_mutex_unlock(&students_left_mutex);
-    ////////12
     //wait for tutor to call the end of lab exercise 
     pthread_exit(EXIT_SUCCESS);
 }
@@ -670,7 +569,6 @@ void * student_routine(void * arg) {
 void * tutor_routine(void * arg) {
     struct tutor_object* tutor = (struct tutor_object*) arg;
     // wait until teacher signals tutor to start 
-
     pthread_mutex_lock(&tutor_enter_mutex);
     pthread_cond_wait(&tutor_enter, &tutor_enter_mutex);
     pthread_mutex_unlock(&tutor_enter_mutex);
@@ -684,29 +582,16 @@ void * tutor_routine(void * arg) {
         enqueue_tutor(tutor);  //add tutor to queue
 
         pthread_mutex_lock(&waiting_for_tutors_mutex); 
-        // printf("Tutor [%d]: The lab room [%d] is vacated and ready for one group.\n", tutor->tutor_id, tutor->tutor_id); 
-        // teacher_to_announce = true; // announce that the lab is available
-        // pthread_cond_signal(&tutor_available);
         do {
             // if teacher still has grp of students waiting 
-            // printf("tutor %d: waiting to tutors_vacate_room signal\n", tutor->tutor_id);
             pthread_cond_wait(&tutors_vacate_room, &waiting_for_tutors_mutex);
-            // printf("tutor %d: curr_lab_num\n", curr_lab_num);
-        // } while ((curr_lab_num != tutor->lab_id) && ((curr_tutor_id != -1) ^ (curr_lab_num != tutor->lab_id)));
         } while ((curr_lab_num != tutor->lab_id) && (curr_tutor_id != -1));
         pthread_cond_signal(&tutor_available);
-
        
         pthread_mutex_lock(&tutor_id_mutex);
         if (curr_tutor_id == -1) {
             tutor->has_left = true;
-            curr_tid_to_repeat = tutor->tutor_id;
-            // pthread_mutex_lock(&tutor_repeat_id_mutex);  
-            // do {
-            //     printf("tutor %d is waiting for teacher's signal\n", tutor->tutor_id);
-            //     pthread_cond_wait(&tell_tutor_exit, &tutors_leave_mutex);
-            // } while ((curr_tid_to_repeat != tutor->tutor_id));
-            // pthread_mutex_unlock(&tutor_repeat_id_mutex);  
+            curr_tid_to_repeat = tutor->tutor_id; 
 
             printf("Tutor %d: Thanks Teacher. Bye!\n", tutor->tutor_id);
             pthread_cond_broadcast(&tutors_repeat_leave);
@@ -716,10 +601,8 @@ void * tutor_routine(void * arg) {
             pthread_exit(NULL);
         }
 
-
         printf("Tutor [%d]: The lab room [%d] is vacated and ready for one group.\n", tutor->tutor_id, tutor->tutor_id); 
-        teacher_to_announce = true; // announce that the lab is available
-
+        // teacher_to_announce = true; // announce that the lab is available
 
         pthread_mutex_unlock(&tutor_id_mutex);
         //wait for teacher to assign a group of students 
@@ -728,7 +611,6 @@ void * tutor_routine(void * arg) {
         pthread_mutex_lock(&lab_availability_mutex);
         //wait for teacher to signal lab is full
         while (teacher_to_tutor != tutor->group_id) { //wait for teacher signal
-            ////4. 
             pthread_cond_wait(&announce_grp_arrived, &lab_availability_mutex);
         }
         //after all students in the group have entered the room
@@ -753,9 +635,7 @@ void * tutor_routine(void * arg) {
         pthread_cond_broadcast(&waiting_students_leave);
 
         pthread_mutex_lock(&grp_id_mutex);
-        ///////11
         while (!all_students_have_left(group_id_done)) {
-            // printf("\t tutor waiting for all students in grp %d to leave\n", group_id_done);
             pthread_cond_wait(&students_all_left, &grp_id_mutex);
         }
         pthread_mutex_unlock(&grp_id_mutex);
@@ -787,7 +667,6 @@ int total_students_in_group(int grp_id)  {
             count++;
         }
     }
-    // pthread_mutex_unlock(&waiting_for_tutors_mutex);
     return count;
 }
 
